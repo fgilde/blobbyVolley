@@ -1,0 +1,28 @@
+{
+  "name": "blobby-volley",
+  "version": "1.0.0",
+  "description": "A modern web-based Blobby Volley clone built with Three.js — single player vs CPU and online multiplayer.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n VITE,WS -c cyan,magenta \"npm:dev:client\" \"npm:server\"",
+    "dev:client": "vite",
+    "server": "node server/server.js",
+    "build": "vite build",
+    "preview": "vite build && node server/server.js --serve-dist",
+    "start": "node server/server.js --serve-dist",
+    "typecheck": "tsc --noEmit",
+    "test:lobby": "node server/test-lobby.mjs"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5",
+    "three": "^0.169.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "@types/ws": "^8.5.12",
+    "concurrently": "^9.0.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  }
+}
