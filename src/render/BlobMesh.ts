@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { BLOB_RADIUS } from '../game/constants';
 
+// Purely cosmetic: the collision circle is centered on the ground (so the blob
+// is a dome = upper hemisphere), but rendering exactly half a sphere reads as
+// "buried in the sand". Lifting the mesh a bit shows more than a hemisphere, so
+// the blob looks like a rounded body sitting ON the sand.
+const GROUND_LIFT = BLOB_RADIUS * 0.42;
+
 /**
  * A friendly Blobby avatar: a glossy dome with two googly eyes. It squashes and
  * stretches based on vertical velocity and leans in the direction of travel.
@@ -78,7 +84,7 @@ export class BlobMesh {
    * @param lookAt   world-space point the eyes should track (usually the ball)
    */
   update(x: number, y: number, vx: number, vy: number, lookAt: THREE.Vector3): void {
-    this.group.position.set(x, y, 0);
+    this.group.position.set(x, y + GROUND_LIFT, 0);
 
     // Squash & stretch: stretch up when moving up, squash when landing.
     const targetSquash = THREE.MathUtils.clamp(1 + vy * 0.012, 0.82, 1.18);
