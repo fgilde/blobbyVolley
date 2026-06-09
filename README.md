@@ -20,9 +20,24 @@ Ein moderner, webbasierter Blobby-Volley-Clone mit **Three.js** — gegen die CP
 
 **<https://fgilde.github.io/blobbyVolley/>**
 
-Der Online-Modus läuft **komplett ohne eigenen Backend-Server** über WebRTC
-Peer-to-Peer (Signaling via kostenloser PeerJS-Cloud) — deshalb kann das ganze
-Spiel als statische Seite auf GitHub Pages gehostet werden.
+Der Client liegt statisch auf GitHub Pages. Der Online-Modus verbindet sich mit
+einem kleinen **Lobby-/Relay-Server** (WebSocket), der kostenlos auf Render läuft
+— der Lobby-Ersteller rechnet die Physik, der Server reicht die Nachrichten
+zwischen beiden Spielern durch.
+
+### Relay-Server deployen (einmalig, kostenlos)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/fgilde/blobbyVolley)
+
+1. Auf den Button klicken (oder bei Render „New → Blueprint" mit diesem Repo).
+2. Render liest `render.yaml`, baut den Dienst und gibt eine URL wie
+   `https://blobbyvolley-relay-fgilde.onrender.com` aus.
+3. Die Pages-App ist bereits auf genau diese URL eingestellt (`VITE_RELAY_URL`).
+   Weicht deine URL ab, einfach per Parameter testen:
+   `https://fgilde.github.io/blobbyVolley/?relay=wss://DEINE-URL.onrender.com`
+
+> Der kostenlose Render-Dienst schläft nach ~15 Min Inaktivität ein; der erste
+> Verbindungsversuch danach weckt ihn (~30 s), danach läuft alles flüssig.
 
 ## Schnellstart (lokal)
 
@@ -65,12 +80,11 @@ Der Gewinner eines Ballwechsels hat den nächsten Aufschlag.
 
 Der **Ersteller der Lobby** (links) berechnet die maßgebliche Physik und streamt
 Snapshots (30 Hz); der Beitretende (rechts) sendet seine Eingaben und rendert
-den interpolierten Zustand. Die Daten fließen **direkt** zwischen beiden Browsern
-(WebRTC-DataChannel); der Lobby-Code ist die Peer-ID beim Signaling-Broker.
+den interpolierten Zustand. Der Relay-Server pairt die beiden Spieler über den
+Lobby-Code und leitet die Nachrichten weiter — er rechnet selbst nichts.
 
-> **Falls der öffentliche PeerJS-Broker mal überlastet ist:** Man kann einen
-> eigenen [PeerServer](https://github.com/peers/peerjs-server) betreiben und per
-> URL-Parameter ansteuern, z. B. `…/?peer=mein-server.de:9000/myapp`.
+> **Server-Adresse überschreiben** (ohne Neu-Build): `…/?relay=wss://host` —
+> praktisch für eigenes Hosting oder schnelles Testen.
 
 ## Architektur
 
@@ -88,15 +102,16 @@ src/
     Particles.ts      GPU-Partikelsystem (Custom-Shader)
     textures.ts       prozedurale Texturen (Strandball, Sand, Himmel)
   net/
-    protocol.ts       Nachrichten-Protokoll (über den DataChannel)
-    NetClient.ts      WebRTC-P2P-Client (PeerJS) + Lobby-Logik
+    protocol.ts       Wire-Protokoll (Client ↔ Relay)
+    NetClient.ts      WebSocket-Client + Lobby-Logik (Relay-URL konfigurierbar)
   ui/
     UI.ts             Menüs, HUD, Banner, Touch-Controls
     styles.css        Glassmorphism-Oberfläche
   main.ts             verdrahtet alles zusammen
-server/                (optional, nur für Self-Hosting ohne P2P)
-  server.js           klassischer Relay-/Lobby-Server + statisches Hosting
+server/
+  server.js           Lobby-/Relay-Server (Render) + optionales statisches Hosting
   test-lobby.mjs      Integrationstest des Relays
+render.yaml           Render-Blueprint für den Relay-Server
 ```
 
 ## Tests / Checks

@@ -1,0 +1,19 @@
+# Render.com Blueprint — deploys the Blobby Volley lobby/relay WebSocket server.
+# One-click: https://render.com/deploy?repo=https://github.com/fgilde/blobbyVolley
+#
+# The free plan spins the service down after ~15 min of inactivity; the first
+# connection afterwards wakes it (~30 s). Render injects PORT and provides a
+# public https/wss endpoint at https://<name>.onrender.com.
+services:
+  - type: web
+    name: blobbyvolley-relay-fgilde
+    runtime: node
+    plan: free
+    # Only the relay needs `ws`; skip the heavy client devDependencies.
+    buildCommand: npm install --omit=dev
+    startCommand: node server/server.js
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

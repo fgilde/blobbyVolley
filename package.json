@@ -14,7 +14,6 @@
     "test:lobby": "node server/test-lobby.mjs"
   },
   "dependencies": {
-    "peerjs": "^1.5.5",
     "three": "^0.169.0",
     "ws": "^8.18.0"
   },
