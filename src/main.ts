@@ -85,7 +85,10 @@ function buildController(): GameController {
   });
 }
 
-function handlePhase(phase: Phase, info?: { winner?: Side; countdown?: number; pointWinner?: Side }): void {
+function handlePhase(
+  phase: Phase,
+  info?: { winner?: Side; countdown?: number; pointWinner?: Side; reason?: 'ground' | 'fault' },
+): void {
   switch (phase) {
     case 'countdown':
       ui.showCountdown(info?.countdown ?? 0);
@@ -103,7 +106,12 @@ function handlePhase(phase: Phase, info?: { winner?: Side; countdown?: number; p
       const w = info?.pointWinner;
       if (w !== undefined) {
         const mine = w === playerSide;
-        ui.showPoint(mine ? 'Punkt für dich! 🎉' : 'Punkt für Gegner', UI.sideColor(w));
+        let text = mine ? 'Punkt für dich! 🎉' : 'Punkt für Gegner';
+        if (info?.reason === 'fault') {
+          // The side that just lost touched the ball too often.
+          text = mine ? 'Gegner zu oft am Ball!' : 'Zu oft berührt! (max. 3×)';
+        }
+        ui.showPoint(text, UI.sideColor(w));
       }
       break;
     }

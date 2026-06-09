@@ -1,7 +1,7 @@
 import { AIController, Difficulty } from './AI';
 import { EMPTY_INPUT, FIXED_DT, PlayerInput, Side, WINNING_SCORE } from './constants';
 import { InputManager } from './Input';
-import { Simulation, SimState } from './Simulation';
+import { BlobState, Simulation, SimState, stepBlobKinematics } from './Simulation';
 import { GameRenderer } from '../render/GameRenderer';
 import { NetClient } from '../net/NetClient';
 import { StateSnapshot } from '../net/protocol';
@@ -11,12 +11,15 @@ export type Phase = 'countdown' | 'rally' | 'point' | 'matchover';
 
 export interface GameCallbacks {
   onScore: (left: number, right: number) => void;
-  onPhase: (phase: Phase, info?: { winner?: Side; countdown?: number; pointWinner?: Side }) => void;
+  onPhase: (
+    phase: Phase,
+    info?: { winner?: Side; countdown?: number; pointWinner?: Side; reason?: 'ground' | 'fault' },
+  ) => void;
   onPing?: (ms: number) => void;
 }
 
-const SNAPSHOT_INTERVAL = 1 / 30; // host streams 30 snapshots/s
-const INTERP_DELAY = 0.1; // guest renders 100ms in the past for smoothness
+const SNAPSHOT_INTERVAL = 1 / 40; // host streams 40 snapshots/s
+const INTERP_DELAY = 0.11; // guest renders ~110ms in the past for smoothness
 
 export class GameController {
   private sim = new Simulation();
@@ -38,6 +41,9 @@ export class GameController {
   // Online state.
   private remoteInput: PlayerInput = { ...EMPTY_INPUT };
   private snapBuffer: { time: number; snap: StateSnapshot }[] = [];
+  /** Guest: locally predicted state of the player's OWN blob (client prediction). */
+  private predBlob: BlobState | null = null;
+  private predAccum = 0;
 
   constructor(
     private renderer: GameRenderer,
@@ -67,6 +73,7 @@ export class GameController {
     this.mode = 'guest';
     this.ai = null;
     this.phase = 'rally';
+    this.predBlob = null;
     this.run();
   }
 
@@ -227,7 +234,7 @@ export class GameController {
     this.renderer.celebrate(winner);
     this.phase = 'point';
     this.phaseTimer = 1.4;
-    this.cb.onPhase('point', { pointWinner: winner });
+    this.cb.onPhase('point', { pointWinner: winner, reason: this.sim.pointReason });
     // Winner serves next (classic Blobby rule).
     this.sim.resetForServe(winner);
     if (this.mode === 'host' && this.net) {
@@ -263,6 +270,31 @@ export class GameController {
     const state = this.lerpSnapshots(older.snap, newer.snap, t);
     this.applyGuestScore(newer.snap);
     this.applyGuestPhase(newer.snap);
+
+    // --- Client-side prediction of our OWN blob (Side.Right) ---
+    // The ball + opponent come from the (slightly delayed) host snapshots, but
+    // our own movement is simulated locally from local input so it feels lag-free.
+    const rallyActive =
+      newer.snap.ballActive && (newer.snap.over ?? null) === null && newer.snap.countdown === undefined;
+    if (!rallyActive || !this.predBlob) {
+      // Snap to authoritative whenever the rally isn't live (serve, countdown, point).
+      const a = state.blobs[Side.Right];
+      this.predBlob = {
+        pos: { x: a.pos.x, y: a.pos.y },
+        vel: { x: a.vel.x, y: a.vel.y },
+        grounded: a.pos.y <= 0.01,
+      };
+      this.predAccum = 0;
+    } else {
+      const input = this.input.getPlayerInput();
+      this.predAccum += frameDt;
+      let guard = 0;
+      while (this.predAccum >= FIXED_DT && guard++ < 8) {
+        stepBlobKinematics(this.predBlob, input, Side.Right, FIXED_DT);
+        this.predAccum -= FIXED_DT;
+      }
+    }
+    state.blobs[Side.Right] = this.predBlob;
 
     // Fire contact effects from the newest snapshot once.
     if (newer.snap.seq !== this.lastFxSeq && newer.snap.fx) {

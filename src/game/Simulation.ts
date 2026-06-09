@@ -11,6 +11,7 @@ import {
   COURT_HALF_WIDTH,
   HIT_IMPULSE,
   LEFT_START_X,
+  MAX_TOUCHES_PER_SIDE,
   NET_HALF_WIDTH,
   NET_HEIGHT,
   PlayerInput,
@@ -63,6 +64,44 @@ function len(x: number, y: number): number {
 }
 
 /**
+ * Advance a single blob's kinematics by `dt`. Pulled out as a pure function so
+ * the online guest can run the exact same physics locally for its OWN blob
+ * (client-side prediction) — eliminating input lag — while the host stays
+ * authoritative for the ball and the opponent.
+ */
+export function stepBlobKinematics(blob: BlobState, input: PlayerInput, side: Side, dt: number): void {
+  // Horizontal movement is velocity-based and instantaneous (snappy controls).
+  let dir = 0;
+  if (input.left) dir -= 1;
+  if (input.right) dir += 1;
+  blob.vel.x = dir * BLOB_MOVE_SPEED;
+
+  if (input.jump && blob.grounded) {
+    blob.vel.y = BLOB_JUMP_SPEED;
+    blob.grounded = false;
+  }
+
+  blob.vel.y += BLOB_GRAVITY * dt;
+  blob.pos.x += blob.vel.x * dt;
+  blob.pos.y += blob.vel.y * dt;
+
+  // Clamp to own half of the court (cannot cross the net).
+  const innerEdge = NET_HALF_WIDTH + BLOB_RADIUS;
+  if (side === Side.Left) {
+    blob.pos.x = clamp(blob.pos.x, -COURT_HALF_WIDTH + BLOB_RADIUS, -innerEdge);
+  } else {
+    blob.pos.x = clamp(blob.pos.x, innerEdge, COURT_HALF_WIDTH - BLOB_RADIUS);
+  }
+
+  // Ground.
+  if (blob.pos.y <= 0) {
+    blob.pos.y = 0;
+    blob.vel.y = 0;
+    blob.grounded = true;
+  }
+}
+
+/**
  * Deterministic, fixed-timestep Blobby Volley simulation. Pure logic — knows
  * nothing about rendering or networking. The same class runs on the host for
  * online play and locally for the single-player / CPU modes.
@@ -73,6 +112,13 @@ export class Simulation {
   contacts: ContactEvent[] = [];
   /** Set when a point is scored during step(): side that WON the point. */
   pointWinner: Side | null = null;
+  /** Why the last point was scored (for UI flavor). */
+  pointReason: 'ground' | 'fault' = 'ground';
+
+  // --- Touch-counting (max 3 consecutive touches per side, volleyball-style) ---
+  private possessionSide: Side | null = null;
+  private touchCount = 0;
+  private contactPrev: [boolean, boolean] = [false, false];
 
   constructor(serving: Side = Side.Left) {
     this.state = {
@@ -102,6 +148,9 @@ export class Simulation {
     const serveX = serving === Side.Left ? LEFT_START_X : RIGHT_START_X;
     s.ball.pos = { x: serveX, y: 8.5 };
     s.ball.vel = { x: 0, y: 0 };
+    this.possessionSide = null;
+    this.touchCount = 0;
+    this.contactPrev = [false, false];
   }
 
   /** Advance the simulation by one fixed timestep. */
@@ -115,35 +164,7 @@ export class Simulation {
   }
 
   private stepBlob(blob: BlobState, input: PlayerInput, side: Side, dt: number): void {
-    // Horizontal movement is velocity-based and instantaneous (snappy controls).
-    let dir = 0;
-    if (input.left) dir -= 1;
-    if (input.right) dir += 1;
-    blob.vel.x = dir * BLOB_MOVE_SPEED;
-
-    if (input.jump && blob.grounded) {
-      blob.vel.y = BLOB_JUMP_SPEED;
-      blob.grounded = false;
-    }
-
-    blob.vel.y += BLOB_GRAVITY * dt;
-    blob.pos.x += blob.vel.x * dt;
-    blob.pos.y += blob.vel.y * dt;
-
-    // Clamp to own half of the court (cannot cross the net).
-    const innerEdge = NET_HALF_WIDTH + BLOB_RADIUS;
-    if (side === Side.Left) {
-      blob.pos.x = clamp(blob.pos.x, -COURT_HALF_WIDTH + BLOB_RADIUS, -innerEdge);
-    } else {
-      blob.pos.x = clamp(blob.pos.x, innerEdge, COURT_HALF_WIDTH - BLOB_RADIUS);
-    }
-
-    // Ground.
-    if (blob.pos.y <= 0) {
-      blob.pos.y = 0;
-      blob.vel.y = 0;
-      blob.grounded = true;
-    }
+    stepBlobKinematics(blob, input, side, dt);
   }
 
   private stepBall(dt: number): void {
@@ -152,17 +173,17 @@ export class Simulation {
     if (!this.state.ballActive) return;
 
     ball.vel.y += BALL_GRAVITY * dt;
-
-    // Clamp insane speeds (prevents tunneling through the net at high energy).
-    ball.vel.x = clamp(ball.vel.x, -BALL_MAX_SPEED, BALL_MAX_SPEED);
-    ball.vel.y = clamp(ball.vel.y, -BALL_MAX_SPEED, BALL_MAX_SPEED);
+    this.capBallSpeed();
 
     ball.pos.x += ball.vel.x * dt;
     ball.pos.y += ball.vel.y * dt;
 
-    // --- Blob collisions ---
-    this.collideBallWithBlob(this.state.blobs[Side.Left], Side.Left);
-    this.collideBallWithBlob(this.state.blobs[Side.Right], Side.Right);
+    // --- Blob collisions (with rising-edge touch counting) ---
+    const hitL = this.collideBallWithBlob(this.state.blobs[Side.Left], Side.Left);
+    const hitR = this.collideBallWithBlob(this.state.blobs[Side.Right], Side.Right);
+    this.registerTouch(Side.Left, hitL);
+    this.registerTouch(Side.Right, hitR);
+    if (this.pointWinner !== null) return; // a touch fault ended the rally
 
     // --- Walls ---
     if (ball.pos.x < -COURT_HALF_WIDTH + BALL_RADIUS) {
@@ -190,21 +211,33 @@ export class Simulation {
       ball.pos.y = BALL_RADIUS;
       const winner = ball.pos.x < 0 ? Side.Right : Side.Left;
       this.contacts.push({ type: 'ground', x: ball.pos.x, y: BALL_RADIUS, strength: Math.abs(ball.vel.y) });
-      this.awardPoint(winner);
+      this.awardPoint(winner, 'ground');
     }
   }
 
-  private collideBallWithBlob(blob: BlobState, side: Side): void {
+  /** Clamp the ball's SPEED (magnitude) so a rally never accelerates. */
+  private capBallSpeed(): void {
+    const v = this.state.ball.vel;
+    const sp = len(v.x, v.y);
+    if (sp > BALL_MAX_SPEED) {
+      const k = BALL_MAX_SPEED / sp;
+      v.x *= k;
+      v.y *= k;
+    }
+  }
+
+  /** @returns true if the ball was in contact with this blob this step. */
+  private collideBallWithBlob(blob: BlobState, side: Side): boolean {
     const ball = this.state.ball;
     const minDist = BALL_RADIUS + BLOB_RADIUS;
     let nx = ball.pos.x - blob.pos.x;
     let ny = ball.pos.y - blob.pos.y;
     let dist = len(nx, ny);
 
-    if (dist >= minDist) return;
+    if (dist >= minDist) return false;
     // The blob is a dome: ignore contacts on the lower hemisphere of the blob
     // so the ball can't bounce off "underneath" the body.
-    if (ny < -BLOB_RADIUS * 0.35) return;
+    if (ny < -BLOB_RADIUS * 0.35) return false;
 
     if (dist < 1e-4) {
       nx = 0;
@@ -231,8 +264,36 @@ export class Simulation {
     // Guarantee the ball always leaves the blob with some upward life.
     if (ball.vel.y < 1.5) ball.vel.y = 1.5 + Math.abs(ball.vel.y) * 0.2;
 
+    // Never let a hit accelerate the ball beyond the rally cap.
+    this.capBallSpeed();
+
     const strength = len(ball.vel.x, ball.vel.y);
     this.contacts.push({ type: 'blob', x: ball.pos.x, y: ball.pos.y, strength, side });
+    return true;
+  }
+
+  /**
+   * Rising-edge touch counting: each fresh contact by a side increments its
+   * consecutive-touch count; touching again after the other side (or after the
+   * ball went over) starts a new possession. A 4th touch in one possession is a
+   * fault and the point goes to the opponent.
+   */
+  private registerTouch(side: Side, colliding: boolean): void {
+    const wasColliding = this.contactPrev[side];
+    this.contactPrev[side] = colliding;
+    if (!colliding || wasColliding) return; // only count the start of a contact
+
+    if (this.possessionSide !== side) {
+      this.possessionSide = side;
+      this.touchCount = 1;
+    } else {
+      this.touchCount += 1;
+    }
+
+    if (this.touchCount > MAX_TOUCHES_PER_SIDE) {
+      const opponent = side === Side.Left ? Side.Right : Side.Left;
+      this.awardPoint(opponent, 'fault');
+    }
   }
 
   private collideBallWithNet(): void {
@@ -282,9 +343,11 @@ export class Simulation {
     }
   }
 
-  private awardPoint(winner: Side): void {
+  private awardPoint(winner: Side, reason: 'ground' | 'fault'): void {
+    if (this.pointWinner !== null) return; // already decided this step
     this.state.score[winner] += 1;
     this.state.ballActive = false;
     this.pointWinner = winner;
+    this.pointReason = reason;
   }
 }

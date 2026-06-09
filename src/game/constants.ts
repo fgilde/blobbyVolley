@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 
 /** Court half-width. Playable x range is [-COURT_HALF_WIDTH, COURT_HALF_WIDTH]. */
-export const COURT_HALF_WIDTH = 8;
+export const COURT_HALF_WIDTH = 11;
 export const COURT_WIDTH = COURT_HALF_WIDTH * 2;
 
 /** Ceiling — ball bounces off the top of the arena. */
@@ -17,15 +17,24 @@ export const NET_HEIGHT = 3.6;
 
 /** Ball. */
 export const BALL_RADIUS = 0.62;
-export const BALL_GRAVITY = -16.5;
-/** Max horizontal/vertical speed a ball can travel (anti-tunneling sanity). */
-export const BALL_MAX_SPEED = 26;
+export const BALL_GRAVITY = -16;
+/**
+ * Hard cap on the ball's SPEED (vector magnitude). In the original Blobby Volley
+ * the ball never accelerates over a rally — every collision result is clamped to
+ * this, so rallies stay at a constant, readable pace.
+ */
+export const BALL_MAX_SPEED = 17;
 
 /** Blob (the player avatar). Collision shape = circle of BLOB_RADIUS. */
 export const BLOB_RADIUS = 1.35;
-export const BLOB_GRAVITY = -34;
-export const BLOB_MOVE_SPEED = 8.2;
-export const BLOB_JUMP_SPEED = 14.5;
+export const BLOB_GRAVITY = -31;
+export const BLOB_MOVE_SPEED = 9;
+/**
+ * Jump impulse. Apex of the blob's CENTER ≈ v²/(2·g) ≈ 15.4²/(2·31) ≈ 3.83,
+ * so the top of the blob crests to ≈ 5.2 — comfortably over the 3.6 net for
+ * spikes, just like the original.
+ */
+export const BLOB_JUMP_SPEED = 15.4;
 
 /** How much of the blob's velocity is transferred to the ball on contact. */
 export const BLOB_VELOCITY_TRANSFER = 0.45;
@@ -35,6 +44,9 @@ export const HIT_IMPULSE = 2.2;
 /** Fixed-timestep simulation rate. */
 export const TICK_RATE = 120;
 export const FIXED_DT = 1 / TICK_RATE;
+
+/** Max consecutive touches one side may take before the ball must go over. */
+export const MAX_TOUCHES_PER_SIDE = 3;
 
 /** Score needed to win a match. */
 export const WINNING_SCORE = 15;

@@ -25,6 +25,8 @@ import {
 export const LEFT_COLOR = 0x3ec6ff;
 export const RIGHT_COLOR = 0xff5470;
 
+const LOOK_AT_Y = 4.2;
+
 export class GameRenderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
@@ -41,7 +43,7 @@ export class GameRenderer {
   private ballSpin = new THREE.Vector3();
   private prevBall = new THREE.Vector2();
   private shake = 0;
-  private camBaseY = 6.4;
+  private camBaseY = 7.2;
   private time = 0;
 
   constructor(private container: HTMLElement) {
@@ -57,9 +59,10 @@ export class GameRenderer {
     this.scene.background = makeSkyTexture('#2a3a8c', '#9fd3ff');
     this.scene.fog = new THREE.Fog(0x9fd3ff, 38, 75);
 
-    this.camera = new THREE.PerspectiveCamera(46, container.clientWidth / container.clientHeight, 0.1, 200);
-    this.camera.position.set(0, this.camBaseY, 22);
-    this.camera.lookAt(0, 4.4, 0);
+    this.camera = new THREE.PerspectiveCamera(48, container.clientWidth / container.clientHeight, 0.1, 200);
+    this.camera.position.set(0, this.camBaseY, 28);
+    this.fitCamera();
+    this.camera.lookAt(0, LOOK_AT_Y, 0);
 
     this.buildLights();
     this.buildArena();
@@ -102,6 +105,17 @@ export class GameRenderer {
     this.composer.setSize(container.clientWidth, container.clientHeight);
 
     window.addEventListener('resize', this.onResize);
+  }
+
+  /** Pull the camera back far enough that the full court fits on any aspect. */
+  private fitCamera(): void {
+    const margin = 1.8;
+    const halfW = COURT_HALF_WIDTH + margin;
+    const vFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
+    const distW = halfW / Math.tan(hFov / 2);
+    const distH = 6.8 / Math.tan(vFov / 2); // vertical framing around the action
+    this.camera.position.z = Math.max(distW, distH, 18);
   }
 
   private makeShadowSprite(tex: THREE.Texture, size: number): THREE.Mesh {
@@ -257,7 +271,7 @@ export class GameRenderer {
     const sway = Math.sin(this.time * 0.4) * 0.15;
     this.camera.position.x = sway + (Math.random() - 0.5) * this.shake;
     this.camera.position.y = this.camBaseY + (Math.random() - 0.5) * this.shake;
-    this.camera.lookAt(0, 4.4, 0);
+    this.camera.lookAt(0, LOOK_AT_Y, 0);
   }
 
   private updateShadow(mesh: THREE.Mesh, x: number, y: number, base: number, falloff: number): void {
@@ -313,6 +327,7 @@ export class GameRenderer {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
     this.camera.aspect = w / h;
+    this.fitCamera();
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
