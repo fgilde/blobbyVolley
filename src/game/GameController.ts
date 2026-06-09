@@ -1,5 +1,13 @@
 import { AIController, Difficulty } from './AI';
-import { EMPTY_INPUT, FIXED_DT, PlayerInput, Side, WINNING_SCORE } from './constants';
+import {
+  BALL_GRAVITY,
+  BLOB_GRAVITY,
+  EMPTY_INPUT,
+  FIXED_DT,
+  PlayerInput,
+  Side,
+  WINNING_SCORE,
+} from './constants';
 import { InputManager } from './Input';
 import { BlobState, Simulation, SimState, stepBlobKinematics } from './Simulation';
 import { GameRenderer } from '../render/GameRenderer';
@@ -19,7 +27,17 @@ export interface GameCallbacks {
 }
 
 const SNAPSHOT_INTERVAL = 1 / 40; // host streams 40 snapshots/s
-const INTERP_DELAY = 0.11; // guest renders ~110ms in the past for smoothness
+
+/** Exponential smoothing toward a target point (returns a fresh vector). */
+function smoothTo(
+  cur: { x: number; y: number } | null,
+  x: number,
+  y: number,
+  f: number,
+): { x: number; y: number } {
+  if (!cur) return { x, y };
+  return { x: cur.x + (x - cur.x) * f, y: cur.y + (y - cur.y) * f };
+}
 
 export class GameController {
   private sim = new Simulation();
@@ -44,6 +62,9 @@ export class GameController {
   /** Guest: locally predicted state of the player's OWN blob (client prediction). */
   private predBlob: BlobState | null = null;
   private predAccum = 0;
+  /** Guest: smoothed render positions for the dead-reckoned ball / opponent. */
+  private renderBall: { x: number; y: number } | null = null;
+  private renderOpp: { x: number; y: number } | null = null;
 
   constructor(
     private renderer: GameRenderer,
@@ -242,47 +263,52 @@ export class GameController {
     }
   }
 
-  // --- Guest rendering (interpolated from snapshots) ---------------------
+  // --- Guest rendering (dead-reckoning extrapolation) --------------------
+  // To keep the game playable over real internet latency, the guest does NOT
+  // render the (delayed) host snapshots verbatim. Instead:
+  //   * its OWN blob is simulated locally from local input (zero input lag),
+  //   * the ball and the opponent are extrapolated forward from the latest
+  //     snapshot to "now" using their velocity (+ gravity), so they track the
+  //     live action instead of lagging behind,
+  //   * rendered positions are smoothed so the small corrections that arrive
+  //     with each snapshot don't pop.
   private tickGuest(frameDt: number, nowSec: number): void {
-    // Always send our input upstream.
     if (this.net) this.net.sendInput(this.input.getPlayerInput());
 
-    const renderTime = nowSec - INTERP_DELAY;
     const buf = this.snapBuffer;
     if (buf.length === 0) {
       this.renderer.sync(this.sim.state, frameDt);
       return;
     }
+    const last = buf[buf.length - 1];
+    const snap = last.snap;
+    this.applyGuestScore(snap);
+    this.applyGuestPhase(snap);
 
-    // Find the two snapshots bracketing renderTime.
-    let older = buf[0];
-    let newer = buf[buf.length - 1];
-    for (let i = 0; i < buf.length - 1; i++) {
-      if (buf[i].time <= renderTime && buf[i + 1].time >= renderTime) {
-        older = buf[i];
-        newer = buf[i + 1];
-        break;
-      }
-    }
-    const span = Math.max(1e-3, newer.time - older.time);
-    const t = Math.max(0, Math.min(1, (renderTime - older.time) / span));
+    // Time since the snapshot we're extrapolating from (clamped for safety).
+    const dt = Math.max(0, Math.min(0.3, nowSec - last.time));
 
-    const state = this.lerpSnapshots(older.snap, newer.snap, t);
-    this.applyGuestScore(newer.snap);
-    this.applyGuestPhase(newer.snap);
+    // Dead-reckon the ball (gravity only — collisions are corrected next snapshot).
+    const exBallX = snap.ball.x + snap.ball.vx * dt;
+    const exBallY = snap.ball.y + snap.ball.vy * dt + 0.5 * BALL_GRAVITY * dt * dt;
+    // Dead-reckon the opponent blob (Side.Left for a guest).
+    const opp = snap.blobs[Side.Left];
+    const exOppX = opp.x + opp.vx * dt;
+    const exOppY = Math.max(0, opp.y + opp.vy * dt + 0.5 * BLOB_GRAVITY * dt * dt);
+
+    // Smooth toward the extrapolated targets (absorbs per-snapshot corrections).
+    this.renderBall = smoothTo(this.renderBall, exBallX, exBallY, 0.5);
+    this.renderOpp = smoothTo(this.renderOpp, exOppX, exOppY, 0.45);
 
     // --- Client-side prediction of our OWN blob (Side.Right) ---
-    // The ball + opponent come from the (slightly delayed) host snapshots, but
-    // our own movement is simulated locally from local input so it feels lag-free.
     const rallyActive =
-      newer.snap.ballActive && (newer.snap.over ?? null) === null && newer.snap.countdown === undefined;
+      snap.ballActive && (snap.over ?? null) === null && snap.countdown === undefined;
     if (!rallyActive || !this.predBlob) {
-      // Snap to authoritative whenever the rally isn't live (serve, countdown, point).
-      const a = state.blobs[Side.Right];
+      const a = snap.blobs[Side.Right];
       this.predBlob = {
-        pos: { x: a.pos.x, y: a.pos.y },
-        vel: { x: a.vel.x, y: a.vel.y },
-        grounded: a.pos.y <= 0.01,
+        pos: { x: a.x, y: a.y },
+        vel: { x: a.vx, y: a.vy },
+        grounded: a.y <= 0.01,
       };
       this.predAccum = 0;
     } else {
@@ -294,13 +320,27 @@ export class GameController {
         this.predAccum -= FIXED_DT;
       }
     }
-    state.blobs[Side.Right] = this.predBlob;
+
+    const state: SimState = {
+      ball: { pos: { ...this.renderBall }, vel: { x: snap.ball.vx, y: snap.ball.vy } },
+      blobs: [
+        {
+          pos: { ...this.renderOpp },
+          vel: { x: opp.vx, y: opp.vy },
+          grounded: this.renderOpp.y <= 0.01,
+        },
+        this.predBlob,
+      ],
+      score: [snap.score[0], snap.score[1]],
+      serving: snap.serving as Side,
+      ballActive: snap.ballActive,
+    };
 
     // Fire contact effects from the newest snapshot once.
-    if (newer.snap.seq !== this.lastFxSeq && newer.snap.fx) {
-      this.lastFxSeq = newer.snap.seq;
+    if (snap.seq !== this.lastFxSeq && snap.fx) {
+      this.lastFxSeq = snap.seq;
       this.renderer.handleContacts(
-        newer.snap.fx.map((f) => ({
+        snap.fx.map((f) => ({
           type: f.t as 'blob' | 'net' | 'ground' | 'wall' | 'ceiling',
           x: f.x,
           y: f.y,
@@ -347,31 +387,6 @@ export class GameController {
       this.guestCountdown = -1;
       this.cb.onPhase('rally');
     }
-  }
-
-  private lerpSnapshots(a: StateSnapshot, b: StateSnapshot, t: number): SimState {
-    const lerp = (x: number, y: number) => x + (y - x) * t;
-    return {
-      ball: {
-        pos: { x: lerp(a.ball.x, b.ball.x), y: lerp(a.ball.y, b.ball.y) },
-        vel: { x: b.ball.vx, y: b.ball.vy },
-      },
-      blobs: [
-        {
-          pos: { x: lerp(a.blobs[0].x, b.blobs[0].x), y: lerp(a.blobs[0].y, b.blobs[0].y) },
-          vel: { x: b.blobs[0].vx, y: b.blobs[0].vy },
-          grounded: b.blobs[0].y <= 0.01,
-        },
-        {
-          pos: { x: lerp(a.blobs[1].x, b.blobs[1].x), y: lerp(a.blobs[1].y, b.blobs[1].y) },
-          vel: { x: b.blobs[1].vx, y: b.blobs[1].vy },
-          grounded: b.blobs[1].y <= 0.01,
-        },
-      ],
-      score: [b.score[0], b.score[1]],
-      serving: b.serving as Side,
-      ballActive: b.ballActive,
-    };
   }
 
   private encodeSnapshot(): StateSnapshot {

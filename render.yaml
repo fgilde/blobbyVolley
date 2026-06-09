@@ -9,6 +9,9 @@ services:
     name: blobbyvolley-relay-fgilde
     runtime: node
     plan: free
+    # Pick the region closest to the players. Frankfurt for Europe — this is the
+    # single biggest latency win, since every message hops player -> relay -> player.
+    region: frankfurt
     # Only the relay needs `ws`; skip the heavy client devDependencies.
     buildCommand: npm install --omit=dev
     startCommand: node server/server.js
